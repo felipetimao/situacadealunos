@@ -1,6 +1,6 @@
 """
-Sistema de Previsão de Situação Escolar
-=========================================
+Sistema de Previsão de Situação Escolar (versão Streamlit)
+============================================================
 
 Prevê se um aluno será Aprovado, ficará em Recuperação ou será Reprovado,
 com base em horas de estudo, número de faltas e nota obtida.
@@ -11,7 +11,7 @@ Estrutura do arquivo (nessa ordem):
     3. Comparação de modelos (avaliação)
     4. Treinamento do modelo final
     5. Funções de apoio (gráficos, previsão)
-    6. Interface Gradio
+    6. Interface Streamlit
 
 ⚠️ AVISO IMPORTANTE SOBRE OS DADOS
 -----------------------------------
@@ -37,11 +37,12 @@ Por isso:
 
 Recomendação: para um modelo realmente confiável, o ideal é ter pelo
 menos algumas dezenas (idealmente centenas) de registros de alunos.
+
+Para rodar:
+    streamlit run app_streamlit.py
 """
 
-import io
 import os
-import base64
 
 import numpy as np
 import pandas as pd
@@ -54,9 +55,9 @@ from sklearn.model_selection import LeaveOneOut, cross_val_predict
 from sklearn.tree import DecisionTreeClassifier, plot_tree
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score, confusion_matrix
 
-import gradio as gr
+import streamlit as st
 
 # ---------------------------------------------------------------------------
 # Configuração geral
@@ -78,6 +79,7 @@ CORES_SITUACAO = {
 # 1. Carregamento dos dados
 # ---------------------------------------------------------------------------
 
+@st.cache_data
 def carregar_dados() -> pd.DataFrame:
     """
     Carrega o dataset de alunos.
@@ -140,7 +142,7 @@ def montar_candidatos():
     }
 
 
-def avaliar_modelos(x_escalado, y, n_amostras: int):
+def avaliar_modelos(x_escalado, y):
     """
     Avalia cada modelo candidato usando Leave-One-Out Cross-Validation.
 
@@ -190,16 +192,7 @@ def treinar_modelo_final(nome_modelo: str, x_escalado, y):
 # 5. Funções de apoio (gráficos e explicações)
 # ---------------------------------------------------------------------------
 
-def figura_para_base64(fig) -> str:
-    buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", bbox_inches="tight", dpi=150, transparent=True)
-    plt.close(fig)
-    buffer.seek(0)
-    codigo = base64.b64encode(buffer.read()).decode("utf-8")
-    return f"data:image/png;base64,{codigo}"
-
-
-def gerar_grafico_arvore(modelo, codificador) -> str:
+def gerar_grafico_arvore(modelo, codificador):
     fig, ax = plt.subplots(figsize=(9, 6))
     if isinstance(modelo, DecisionTreeClassifier):
         plot_tree(
@@ -220,10 +213,10 @@ def gerar_grafico_arvore(modelo, codificador) -> str:
             ha="center", va="center", fontsize=11, wrap=True,
         )
         ax.axis("off")
-    return figura_para_base64(fig)
+    return fig
 
 
-def gerar_matriz_confusao(y, previsoes, codificador) -> str:
+def gerar_matriz_confusao(y, previsoes, codificador):
     matriz = confusion_matrix(y, previsoes)
     fig, ax = plt.subplots(figsize=(4.5, 4))
     im = ax.imshow(matriz, cmap="Blues")
@@ -241,10 +234,10 @@ def gerar_matriz_confusao(y, previsoes, codificador) -> str:
                      color="white" if matriz[i, j] > matriz.max() / 2 else "black",
                      fontsize=12, fontweight="bold")
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    return figura_para_base64(fig)
+    return fig
 
 
-def gerar_grafico_comparacao(resultados: dict) -> str:
+def gerar_grafico_comparacao(resultados: dict):
     nomes = list(resultados.keys())
     acuracias = [resultados[n]["acuracia"] * 100 for n in nomes]
     cores = ["#6366f1", "#06b6d4", "#f97316"]
@@ -258,10 +251,10 @@ def gerar_grafico_comparacao(resultados: dict) -> str:
         ax.text(barra.get_x() + barra.get_width() / 2, valor + 2,
                  f"{valor:.0f}%", ha="center", fontweight="bold")
     plt.xticks(rotation=10)
-    return figura_para_base64(fig)
+    return fig
 
 
-def explicar_previsao(modelo, codificador, x_linha_escalada) -> str:
+def explicar_previsao(modelo, x_linha_escalada) -> str:
     """Gera uma explicação textual simples com base na importância das features."""
     if hasattr(modelo, "feature_importances_"):
         importancias = modelo.feature_importances_
@@ -292,61 +285,50 @@ def resumo_dataset(df: pd.DataFrame) -> str:
             "validada de verdade. Para confiabilidade real, recomenda-se "
             "coletar pelo menos algumas dezenas de exemplos por classe."
         )
-    return (
-        f"**Total de registros:** {len(df)}\n\n{linhas}{aviso}"
+    return f"**Total de registros:** {len(df)}\n\n{linhas}{aviso}"
+
+
+# ---------------------------------------------------------------------------
+# Preparação executada uma única vez (cacheada) na inicialização do app
+# ---------------------------------------------------------------------------
+
+@st.cache_resource
+def preparar_tudo():
+    df_alunos = carregar_dados()
+    x_bruto, x_escalado, y_codificado, codificador, escalador = preparar_dados(df_alunos)
+    resultados_modelos, nome_melhor_modelo = avaliar_modelos(x_escalado, y_codificado)
+    modelo_final = treinar_modelo_final(nome_melhor_modelo, x_escalado, y_codificado)
+
+    fig_arvore = gerar_grafico_arvore(
+        montar_candidatos()["Árvore de Decisão"].fit(x_escalado, y_codificado), codificador
     )
+    fig_matriz = gerar_matriz_confusao(
+        y_codificado, resultados_modelos[nome_melhor_modelo]["previsoes"], codificador
+    )
+    fig_comparacao = gerar_grafico_comparacao(resultados_modelos)
+    resumo_dados = resumo_dataset(df_alunos)
 
-
-# ---------------------------------------------------------------------------
-# Preparação executada uma única vez, na inicialização do app
-# ---------------------------------------------------------------------------
-
-df_alunos = carregar_dados()
-x_bruto, x_escalado, y_codificado, codificador, escalador = preparar_dados(df_alunos)
-resultados_modelos, nome_melhor_modelo = avaliar_modelos(x_escalado, y_codificado, len(df_alunos))
-modelo_final = treinar_modelo_final(nome_melhor_modelo, x_escalado, y_codificado)
-
-GRAFICO_ARVORE = gerar_grafico_arvore(
-    montar_candidatos()["Árvore de Decisão"].fit(x_escalado, y_codificado), codificador
-)
-GRAFICO_MATRIZ = gerar_matriz_confusao(
-    y_codificado, resultados_modelos[nome_melhor_modelo]["previsoes"], codificador
-)
-GRAFICO_COMPARACAO = gerar_grafico_comparacao(resultados_modelos)
-RESUMO_DADOS = resumo_dataset(df_alunos)
-
-TEXTO_SOBRE_MODELO = f"""
-### Modelo escolhido: **{nome_melhor_modelo}**
-
-| Modelo | Acurácia (LOOCV) |
-|---|---|
-""" + "\n".join(
-    f"| {nome} | {info['acuracia'] * 100:.0f}% |"
-    for nome, info in resultados_modelos.items()
-) + f"""
-
-O modelo foi escolhido comparando **Árvore de Decisão**, **Random Forest** e
-**Regressão Logística** usando **Leave-One-Out Cross-Validation (LOOCV)** —
-a técnica correta para datasets muito pequenos, já que um único
-train/test split com poucos dados dá uma métrica pouco confiável.
-
-Depois da comparação, o modelo vencedor é retreinado com **100% dos dados**
-disponíveis para ser usado nas previsões.
-
-{RESUMO_DADOS}
-"""
+    return {
+        "df_alunos": df_alunos,
+        "x_escalado": x_escalado,
+        "y_codificado": y_codificado,
+        "codificador": codificador,
+        "escalador": escalador,
+        "resultados_modelos": resultados_modelos,
+        "nome_melhor_modelo": nome_melhor_modelo,
+        "modelo_final": modelo_final,
+        "fig_arvore": fig_arvore,
+        "fig_matriz": fig_matriz,
+        "fig_comparacao": fig_comparacao,
+        "resumo_dados": resumo_dados,
+    }
 
 
 # ---------------------------------------------------------------------------
 # 6. Função de previsão usada pela interface
 # ---------------------------------------------------------------------------
 
-def prever_situacao(horas_estudo, faltas, nota):
-    if horas_estudo is None or faltas is None or nota is None:
-        return (
-            "⚠️ Preencha todos os campos.", "", ""
-        )
-
+def prever_situacao(horas_estudo, faltas, nota, modelo_final, escalador, codificador):
     erros = []
     if horas_estudo < 0:
         erros.append("Horas de estudo não pode ser negativo.")
@@ -356,7 +338,7 @@ def prever_situacao(horas_estudo, faltas, nota):
         erros.append("Nota deve estar entre 0 e 10.")
 
     if erros:
-        return ("⚠️ " + " ".join(erros), "", "")
+        return None, None, None, erros
 
     entrada = pd.DataFrame([[horas_estudo, faltas, nota]], columns=FEATURE_NAMES)
     entrada_escalada = escalador.transform(entrada)
@@ -364,111 +346,155 @@ def prever_situacao(horas_estudo, faltas, nota):
     classe_prevista_idx = modelo_final.predict(entrada_escalada)[0]
     classe_prevista = codificador.inverse_transform([classe_prevista_idx])[0]
 
+    confianca = None
+    prob_dict = None
     if hasattr(modelo_final, "predict_proba"):
         probabilidades = modelo_final.predict_proba(entrada_escalada)[0]
-        prob_texto = "\n".join(
-            f"- **{classe}**: {p * 100:.1f}%"
-            for classe, p in sorted(
+        prob_dict = dict(
+            sorted(
                 zip(codificador.classes_, probabilidades),
                 key=lambda item: item[1], reverse=True
             )
         )
         confianca = max(probabilidades) * 100
-    else:
-        prob_texto = "Modelo não fornece probabilidades."
-        confianca = None
 
-    explicacao = explicar_previsao(modelo_final, codificador, entrada_escalada)
+    explicacao = explicar_previsao(modelo_final, entrada_escalada)
 
-    emoji = {"Aprovado": "✅", "Recuperacao": "🟡", "Reprovado": "🔴"}.get(classe_prevista, "")
-    cor = CORES_SITUACAO.get(classe_prevista, "#6366f1")
-    resultado_html = f"""
-    <div style="background:{cor}22; border:2px solid {cor}; border-radius:16px;
-                padding:24px; text-align:center;">
-        <div style="font-size:42px;">{emoji}</div>
-        <div style="font-size:28px; font-weight:800; color:{cor}; margin-top:4px;">
-            {classe_prevista}
-        </div>
-        {"<div style='font-size:14px; color:#555; margin-top:6px;'>Confiança do modelo: " + f"{confianca:.1f}%" + "</div>" if confianca is not None else ""}
-    </div>
+    return classe_prevista, confianca, prob_dict, explicacao
+
+
+# ---------------------------------------------------------------------------
+# Interface Streamlit
+# ---------------------------------------------------------------------------
+
+st.set_page_config(
+    page_title="Previsão de Situação Escolar",
+    page_icon="🎓",
+    layout="wide",
+)
+
+st.markdown(
     """
+    <style>
+    .block-container {max-width: 1100px; margin: auto;}
+    #titulo-principal {text-align: center;}
+    .card {
+        border-radius: 16px;
+        border: 1px solid #e5e7eb;
+        padding: 16px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    return resultado_html, prob_texto, explicacao
+st.markdown("<h1 id='titulo-principal'>🎓 Painel de Previsão de Situação Escolar</h1>", unsafe_allow_html=True)
+st.markdown(
+    "<p style='text-align:center; color:#6b7280;'>Modelo de Machine Learning que estima se um aluno será "
+    "<b>Aprovado</b>, entrará em <b>Recuperação</b> ou será <b>Reprovado</b>.</p>",
+    unsafe_allow_html=True,
+)
 
+dados = preparar_tudo()
 
-# ---------------------------------------------------------------------------
-# Interface Gradio — visual estilo dashboard
-# ---------------------------------------------------------------------------
+aba_previsao, aba_modelo, aba_dados = st.tabs(
+    ["🔮 Fazer Previsão", "📈 Sobre o Modelo", "📚 Dados de Treinamento"]
+)
 
-CSS_PERSONALIZADO = """
-.gradio-container {max-width: 1100px !important; margin: auto;}
-#titulo-principal {text-align: center; margin-bottom: 0;}
-#subtitulo {text-align: center; color: #6b7280; margin-top: 0;}
-.card {
-    border-radius: 16px !important;
-    border: 1px solid #e5e7eb !important;
-    padding: 16px !important;
-}
-"""
+# ---------------- Aba 1: Previsão ----------------
+with aba_previsao:
+    col_entrada, col_resultado = st.columns(2)
 
-with gr.Blocks(css=CSS_PERSONALIZADO, theme=gr.themes.Soft(primary_hue="indigo")) as interface:
-    gr.Markdown("# 🎓 Painel de Previsão de Situação Escolar", elem_id="titulo-principal")
-    gr.Markdown(
-        "Modelo de Machine Learning que estima se um aluno será "
-        "**Aprovado**, entrará em **Recuperação** ou será **Reprovado**.",
-        elem_id="subtitulo",
+    with col_entrada:
+        st.markdown("### 📋 Dados do aluno")
+        entrada_horas = st.slider("Horas de estudo por semana", 0, 20, 5, step=1)
+        entrada_faltas = st.slider("Número de faltas", 0, 30, 5, step=1)
+        entrada_nota = st.slider("Nota obtida", 0.0, 10.0, 7.0, step=0.5)
+        botao_prever = st.button("🔍 Prever situação", type="primary")
+
+    with col_resultado:
+        st.markdown("### 🎯 Resultado")
+        if botao_prever:
+            classe_prevista, confianca, prob_dict, explicacao_ou_erros = prever_situacao(
+                entrada_horas, entrada_faltas, entrada_nota,
+                dados["modelo_final"], dados["escalador"], dados["codificador"],
+            )
+
+            if classe_prevista is None:
+                for erro in explicacao_ou_erros:
+                    st.warning(f"⚠️ {erro}")
+            else:
+                emoji = {"Aprovado": "✅", "Recuperacao": "🟡", "Reprovado": "🔴"}.get(classe_prevista, "")
+                cor = CORES_SITUACAO.get(classe_prevista, "#6366f1")
+
+                confianca_html = (
+                    f"<div style='font-size:14px; color:#555; margin-top:6px;'>"
+                    f"Confiança do modelo: {confianca:.1f}%</div>"
+                    if confianca is not None else ""
+                )
+                st.markdown(
+                    f"""
+                    <div style="background:{cor}22; border:2px solid {cor}; border-radius:16px;
+                                padding:24px; text-align:center;">
+                        <div style="font-size:42px;">{emoji}</div>
+                        <div style="font-size:28px; font-weight:800; color:{cor}; margin-top:4px;">
+                            {classe_prevista}
+                        </div>
+                        {confianca_html}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                with st.expander("📊 Probabilidades por situação", expanded=True):
+                    if prob_dict is not None:
+                        for classe, p in prob_dict.items():
+                            st.markdown(f"- **{classe}**: {p * 100:.1f}%")
+                    else:
+                        st.markdown("Modelo não fornece probabilidades.")
+
+                with st.expander("💡 Por que o modelo decidiu isso?", expanded=False):
+                    st.markdown(explicacao_ou_erros)
+        else:
+            st.info("Preencha os dados e clique em **Prever situação**.")
+
+# ---------------- Aba 2: Sobre o modelo ----------------
+with aba_modelo:
+    tabela_modelos = "\n".join(
+        f"| {nome} | {info['acuracia'] * 100:.0f}% |"
+        for nome, info in dados["resultados_modelos"].items()
     )
+    st.markdown(f"### Modelo escolhido: **{dados['nome_melhor_modelo']}**")
+    st.markdown(
+        "| Modelo | Acurácia (LOOCV) |\n|---|---|\n" + tabela_modelos
+    )
+    st.markdown(
+        """
+        O modelo foi escolhido comparando **Árvore de Decisão**, **Random Forest** e
+        **Regressão Logística** usando **Leave-One-Out Cross-Validation (LOOCV)** —
+        a técnica correta para datasets muito pequenos, já que um único
+        train/test split com poucos dados dá uma métrica pouco confiável.
 
-    with gr.Tabs():
-        # ---------------- Aba 1: Previsão ----------------
-        with gr.Tab("🔮 Fazer Previsão"):
-            with gr.Row():
-                with gr.Column(scale=1, elem_classes="card"):
-                    gr.Markdown("### 📋 Dados do aluno")
-                    entrada_horas = gr.Slider(
-                        0, 20, value=5, step=1, label="Horas de estudo por semana"
-                    )
-                    entrada_faltas = gr.Slider(
-                        0, 30, value=5, step=1, label="Número de faltas"
-                    )
-                    entrada_nota = gr.Slider(
-                        0, 10, value=7, step=0.5, label="Nota obtida"
-                    )
-                    botao_prever = gr.Button("🔍 Prever situação", variant="primary")
+        Depois da comparação, o modelo vencedor é retreinado com **100% dos dados**
+        disponíveis para ser usado nas previsões.
+        """
+    )
+    st.markdown(dados["resumo_dados"])
 
-                with gr.Column(scale=1, elem_classes="card"):
-                    gr.Markdown("### 🎯 Resultado")
-                    saida_resultado = gr.HTML()
-                    with gr.Accordion("📊 Probabilidades por situação", open=True):
-                        saida_probabilidades = gr.Markdown()
-                    with gr.Accordion("💡 Por que o modelo decidiu isso?", open=False):
-                        saida_explicacao = gr.Markdown()
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.pyplot(dados["fig_comparacao"])
+    with col_b:
+        st.pyplot(dados["fig_matriz"])
+    st.pyplot(dados["fig_arvore"])
 
-            botao_prever.click(
-                fn=prever_situacao,
-                inputs=[entrada_horas, entrada_faltas, entrada_nota],
-                outputs=[saida_resultado, saida_probabilidades, saida_explicacao],
-            )
-
-        # ---------------- Aba 2: Sobre o modelo ----------------
-        with gr.Tab("📈 Sobre o Modelo"):
-            gr.Markdown(TEXTO_SOBRE_MODELO)
-            with gr.Row():
-                gr.Image(GRAFICO_COMPARACAO, label="Comparação de modelos", show_label=True)
-                gr.Image(GRAFICO_MATRIZ, label="Matriz de confusão", show_label=True)
-            gr.Image(GRAFICO_ARVORE, label="Árvore de decisão (referência visual)")
-
-        # ---------------- Aba 3: Dados utilizados ----------------
-        with gr.Tab("📚 Dados de Treinamento"):
-            gr.Markdown("### Alunos usados para treinar o modelo")
-            gr.Dataframe(df_alunos, interactive=False)
-            gr.Markdown(
-                f"Para adicionar mais alunos, edite ou crie um arquivo "
-                f"`{CSV_PATH}` com as colunas `{', '.join(FEATURE_NAMES)}` "
-                f"e `{TARGET_NAME}` — o sistema carrega esse arquivo "
-                "automaticamente na próxima execução."
-            )
-
-
-if __name__ == "__main__":
-    interface.launch()
+# ---------------- Aba 3: Dados utilizados ----------------
+with aba_dados:
+    st.markdown("### Alunos usados para treinar o modelo")
+    st.dataframe(dados["df_alunos"], use_container_width=True)
+    st.markdown(
+        f"Para adicionar mais alunos, edite ou crie um arquivo "
+        f"`{CSV_PATH}` com as colunas `{', '.join(FEATURE_NAMES)}` "
+        f"e `{TARGET_NAME}` — o sistema carrega esse arquivo "
+        "automaticamente na próxima execução."
+    )
