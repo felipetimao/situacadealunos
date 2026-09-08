@@ -39,6 +39,7 @@ Recomendação: para um modelo realmente confiável, o ideal é ter pelo
 menos algumas dezenas (idealmente centenas) de registros de alunos.
 
 Para rodar:
+    pip install -r requirements.txt
     streamlit run app_streamlit.py
 """
 
@@ -49,6 +50,8 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import LeaveOneOut, cross_val_predict
@@ -68,11 +71,26 @@ TARGET_NAME = "Situacao"
 CSV_PATH = "alunos.csv"          # coloque aqui um arquivo maior no futuro
 RANDOM_STATE = 42
 
+# Paleta "ficha de aluno / boletim escolar": tinta azul-marinho no papel
+# creme claro, com um único destaque em âmbar (cor de marca-texto) para
+# o resultado — em vez do terracota/creme genérico ou dos cards em série.
+COR_TINTA = "#1B2A4A"        # azul-marinho (texto, cabeçalhos)
+COR_PAPEL = "#F7F5EF"        # fundo claro tipo papel
+COR_PAPEL_ESCURO = "#EFEBE1" # painéis/sidebar
+COR_LINHA = "#D8D2C2"        # linhas de régua/divisores
+COR_DESTAQUE = "#E2A33D"     # âmbar (marca-texto) — único acento forte
+COR_SLATE = "#4C6485"        # azul acinzentado (texto secundário)
+
 CORES_SITUACAO = {
-    "Aprovado": "#22c55e",
-    "Recuperacao": "#f59e0b",
-    "Reprovado": "#ef4444",
+    "Aprovado": "#3F7D5C",     # verde-musgo (aprovado no boletim)
+    "Recuperacao": "#C98A1E",  # âmbar mais escuro (atenção)
+    "Reprovado": "#A4463B",    # vermelho-tijolo (reprovado)
 }
+
+EMOJI_SITUACAO = {"Aprovado": "✅", "Recuperacao": "🟡", "Reprovado": "🔴"}
+
+FONTE_SERIF = "'Source Serif 4', Georgia, serif"
+FONTE_SANS = "'IBM Plex Sans', 'Segoe UI', sans-serif"
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +211,10 @@ def treinar_modelo_final(nome_modelo: str, x_escalado, y):
 # ---------------------------------------------------------------------------
 
 def gerar_grafico_arvore(modelo, codificador):
+    """Ilustração da árvore treinada (mantida em matplotlib, tema combinando com a página)."""
     fig, ax = plt.subplots(figsize=(9, 6))
+    fig.patch.set_facecolor(COR_PAPEL)
+    ax.set_facecolor(COR_PAPEL)
     if isinstance(modelo, DecisionTreeClassifier):
         plot_tree(
             modelo,
@@ -204,53 +225,105 @@ def gerar_grafico_arvore(modelo, codificador):
             fontsize=9,
             ax=ax,
         )
-        ax.set_title("Árvore de Decisão treinada", fontsize=13, fontweight="bold")
+        ax.set_title("Árvore de Decisão treinada", fontsize=13, fontweight="bold", color=COR_TINTA)
     else:
         ax.text(
             0.5, 0.5,
             "O modelo escolhido não é uma árvore de decisão única,\n"
             "então não há uma árvore individual para exibir.",
-            ha="center", va="center", fontsize=11, wrap=True,
+            ha="center", va="center", fontsize=11, wrap=True, color=COR_TINTA,
         )
         ax.axis("off")
     return fig
 
 
-def gerar_matriz_confusao(y, previsoes, codificador):
+def gerar_grafico_matriz_confusao(y, previsoes, codificador):
+    """Matriz de confusão interativa (Plotly): passe o mouse para ver os totais."""
     matriz = confusion_matrix(y, previsoes)
-    fig, ax = plt.subplots(figsize=(4.5, 4))
-    im = ax.imshow(matriz, cmap="Blues")
-    classes = codificador.classes_
-    ax.set_xticks(range(len(classes)))
-    ax.set_yticks(range(len(classes)))
-    ax.set_xticklabels(classes, rotation=30, ha="right")
-    ax.set_yticklabels(classes)
-    ax.set_xlabel("Previsto")
-    ax.set_ylabel("Real")
-    ax.set_title("Matriz de Confusão (LOOCV)", fontsize=12, fontweight="bold")
-    for i in range(len(classes)):
-        for j in range(len(classes)):
-            ax.text(j, i, matriz[i, j], ha="center", va="center",
-                     color="white" if matriz[i, j] > matriz.max() / 2 else "black",
-                     fontsize=12, fontweight="bold")
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    classes = list(codificador.classes_)
+
+    fig = px.imshow(
+        matriz,
+        x=classes,
+        y=classes,
+        color_continuous_scale=[[0, COR_PAPEL_ESCURO], [1, COR_TINTA]],
+        labels=dict(x="Previsto", y="Real", color="Alunos"),
+        text_auto=True,
+    )
+    fig.update_traces(
+        hovertemplate="Real: %{y}<br>Previsto: %{x}<br>Alunos: %{z}<extra></extra>",
+        textfont=dict(family=FONTE_SANS, size=15, color=COR_TINTA),
+    )
+    fig.update_layout(
+        title=dict(text="Matriz de Confusão (LOOCV)", font=dict(family=FONTE_SERIF, size=16, color=COR_TINTA)),
+        font=dict(family=FONTE_SANS, color=COR_TINTA),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=50, b=10),
+        coloraxis_showscale=False,
+        height=360,
+    )
     return fig
 
 
 def gerar_grafico_comparacao(resultados: dict):
+    """Comparação de modelos em barras interativas, destacando o vencedor em âmbar."""
     nomes = list(resultados.keys())
     acuracias = [resultados[n]["acuracia"] * 100 for n in nomes]
-    cores = ["#6366f1", "#06b6d4", "#f97316"]
+    melhor_idx = int(np.argmax(acuracias))
+    cores = [COR_DESTAQUE if i == melhor_idx else COR_SLATE for i in range(len(nomes))]
 
-    fig, ax = plt.subplots(figsize=(5.5, 3.8))
-    barras = ax.bar(nomes, acuracias, color=cores[: len(nomes)])
-    ax.set_ylim(0, 100)
-    ax.set_ylabel("Acurácia LOOCV (%)")
-    ax.set_title("Comparação entre modelos", fontsize=12, fontweight="bold")
-    for barra, valor in zip(barras, acuracias):
-        ax.text(barra.get_x() + barra.get_width() / 2, valor + 2,
-                 f"{valor:.0f}%", ha="center", fontweight="bold")
-    plt.xticks(rotation=10)
+    fig = go.Figure(
+        go.Bar(
+            x=nomes,
+            y=acuracias,
+            marker_color=cores,
+            text=[f"{v:.0f}%" for v in acuracias],
+            textposition="outside",
+            hovertemplate="%{x}<br>Acurácia LOOCV: %{y:.1f}%<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=dict(text="Comparação entre modelos", font=dict(family=FONTE_SERIF, size=16, color=COR_TINTA)),
+        yaxis=dict(title="Acurácia LOOCV (%)", range=[0, 105], gridcolor=COR_LINHA),
+        xaxis=dict(showgrid=False),
+        font=dict(family=FONTE_SANS, color=COR_TINTA),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=50, b=10),
+        height=360,
+        showlegend=False,
+    )
+    return fig
+
+
+def gerar_grafico_probabilidades(prob_dict: dict):
+    """Barras horizontais interativas com a probabilidade de cada situação."""
+    classes = list(prob_dict.keys())
+    valores = [v * 100 for v in prob_dict.values()]
+    cores = [CORES_SITUACAO.get(c, COR_SLATE) for c in classes]
+
+    fig = go.Figure(
+        go.Bar(
+            x=valores,
+            y=classes,
+            orientation="h",
+            marker_color=cores,
+            text=[f"{v:.1f}%" for v in valores],
+            textposition="outside",
+            hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        xaxis=dict(title="Probabilidade (%)", range=[0, 105], gridcolor=COR_LINHA),
+        yaxis=dict(showgrid=False, autorange="reversed"),
+        font=dict(family=FONTE_SANS, color=COR_TINTA, size=13),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=10, b=10),
+        height=190,
+        showlegend=False,
+    )
     return fig
 
 
@@ -288,6 +361,30 @@ def resumo_dataset(df: pd.DataFrame) -> str:
     return f"**Total de registros:** {len(df)}\n\n{linhas}{aviso}"
 
 
+def dica_faltas(faltas: int) -> str:
+    if faltas <= 5:
+        return "🟢 frequência tranquila"
+    if faltas <= 15:
+        return "🟡 atenção à frequência"
+    return "🔴 risco alto por faltas"
+
+
+def dica_nota(nota: float) -> str:
+    if nota >= 7:
+        return "🟢 nota consolidada"
+    if nota >= 5:
+        return "🟡 nota na média"
+    return "🔴 nota abaixo do esperado"
+
+
+def dica_horas(horas: int) -> str:
+    if horas >= 8:
+        return "🟢 boa rotina de estudo"
+    if horas >= 4:
+        return "🟡 rotina moderada"
+    return "🔴 pouco tempo de estudo"
+
+
 # ---------------------------------------------------------------------------
 # Preparação executada uma única vez (cacheada) na inicialização do app
 # ---------------------------------------------------------------------------
@@ -302,7 +399,7 @@ def preparar_tudo():
     fig_arvore = gerar_grafico_arvore(
         montar_candidatos()["Árvore de Decisão"].fit(x_escalado, y_codificado), codificador
     )
-    fig_matriz = gerar_matriz_confusao(
+    fig_matriz = gerar_grafico_matriz_confusao(
         y_codificado, resultados_modelos[nome_melhor_modelo]["previsoes"], codificador
     )
     fig_comparacao = gerar_grafico_comparacao(resultados_modelos)
@@ -374,28 +471,149 @@ st.set_page_config(
 )
 
 st.markdown(
-    """
+    f"""
     <style>
-    .block-container {max-width: 1100px; margin: auto;}
-    #titulo-principal {text-align: center;}
-    .card {
-        border-radius: 16px;
-        border: 1px solid #e5e7eb;
-        padding: 16px;
-    }
+    @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+    html, body, [class*="css"], .stMarkdown, p, span, div {{
+        font-family: {FONTE_SANS};
+    }}
+    h1, h2, h3, h4 {{
+        font-family: {FONTE_SERIF};
+        color: {COR_TINTA};
+    }}
+
+    .stApp {{
+        background-color: {COR_PAPEL};
+    }}
+    section[data-testid="stSidebar"] {{
+        background-color: {COR_PAPEL_ESCURO};
+        border-right: 1px solid {COR_LINHA};
+    }}
+    div[data-testid="stMetric"] {{
+        background-color: {COR_PAPEL};
+        border: 1px solid {COR_LINHA};
+        border-radius: 4px;
+        padding: 10px 14px;
+    }}
+    div[data-testid="stMetricValue"] {{
+        color: {COR_TINTA};
+        font-family: {FONTE_SERIF};
+    }}
+
+    .cabecalho-ficha {{
+        border-top: 3px solid {COR_TINTA};
+        border-bottom: 1px solid {COR_LINHA};
+        padding: 18px 0 14px 0;
+        margin-bottom: 22px;
+    }}
+    .cabecalho-ficha h1 {{
+        margin: 0;
+        font-size: 2.1rem;
+        letter-spacing: 0.2px;
+    }}
+    .cabecalho-ficha p {{
+        margin: 4px 0 0 0;
+        color: {COR_SLATE};
+        font-size: 1rem;
+    }}
+
+    div[data-testid="stButton"] > button {{
+        background-color: {COR_TINTA};
+        color: {COR_PAPEL};
+        border: none;
+        border-radius: 4px;
+        padding: 0.55em 1.4em;
+        font-weight: 600;
+        transition: background-color 0.15s ease;
+    }}
+    div[data-testid="stButton"] > button:hover {{
+        background-color: {COR_SLATE};
+        color: {COR_PAPEL};
+    }}
+
+    .dica-badge {{
+        display: inline-block;
+        font-size: 0.85rem;
+        color: {COR_SLATE};
+        margin-top: -6px;
+        margin-bottom: 10px;
+    }}
+
+    .resultado-card {{
+        border: 1px solid {COR_LINHA};
+        border-left: 6px solid var(--cor-resultado, {COR_DESTAQUE});
+        border-radius: 4px;
+        padding: 22px 26px;
+        background-color: white;
+        animation: revelar 0.35s ease-out;
+    }}
+    @keyframes revelar {{
+        from {{ opacity: 0; transform: translateY(6px); }}
+        to   {{ opacity: 1; transform: translateY(0); }}
+    }}
+    .resultado-emoji {{ font-size: 2.4rem; line-height: 1; }}
+    .resultado-classe {{
+        font-family: {FONTE_SERIF};
+        font-size: 1.9rem;
+        font-weight: 700;
+        margin-top: 4px;
+    }}
+    .resultado-confianca {{
+        color: {COR_SLATE};
+        font-size: 0.95rem;
+        margin-top: 6px;
+    }}
+
+    div[data-testid="stExpander"] {{
+        border: 1px solid {COR_LINHA} !important;
+        border-radius: 4px !important;
+        background-color: white;
+    }}
+
+    footer {{visibility: hidden;}}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.markdown("<h1 id='titulo-principal'>🎓 Painel de Previsão de Situação Escolar</h1>", unsafe_allow_html=True)
+dados = preparar_tudo()
+
+# ---------------- Sidebar: ficha rápida do sistema ----------------
+with st.sidebar:
+    st.markdown("### 🎓 Ficha do sistema")
+    st.metric("Modelo em uso", dados["nome_melhor_modelo"])
+    st.metric(
+        "Acurácia (LOOCV)",
+        f"{dados['resultados_modelos'][dados['nome_melhor_modelo']]['acuracia'] * 100:.0f}%",
+    )
+    st.metric("Alunos na base", len(dados["df_alunos"]))
+    st.markdown("---")
+    st.markdown("**Legenda**")
+    for situacao, cor in CORES_SITUACAO.items():
+        st.markdown(
+            f"<span style='color:{cor}; font-size:1.1rem;'>●</span> "
+            f"{EMOJI_SITUACAO.get(situacao, '')} {situacao}",
+            unsafe_allow_html=True,
+        )
+    if len(dados["df_alunos"]) < 30:
+        st.markdown("---")
+        st.caption(
+            "⚠️ Base de dados pequena — resultados servem como demonstração "
+            "da arquitetura, não como previsão estatisticamente validada."
+        )
+
+# ---------------- Cabeçalho principal ----------------
 st.markdown(
-    "<p style='text-align:center; color:#6b7280;'>Modelo de Machine Learning que estima se um aluno será "
-    "<b>Aprovado</b>, entrará em <b>Recuperação</b> ou será <b>Reprovado</b>.</p>",
+    """
+    <div class="cabecalho-ficha">
+        <h1>🎓 Painel de Previsão de Situação Escolar</h1>
+        <p>Estima se um aluno será Aprovado, entrará em Recuperação ou será Reprovado,
+        a partir de horas de estudo, faltas e nota.</p>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
-
-dados = preparar_tudo()
 
 aba_previsao, aba_modelo, aba_dados = st.tabs(
     ["🔮 Fazer Previsão", "📈 Sobre o Modelo", "📚 Dados de Treinamento"]
@@ -403,17 +621,24 @@ aba_previsao, aba_modelo, aba_dados = st.tabs(
 
 # ---------------- Aba 1: Previsão ----------------
 with aba_previsao:
-    col_entrada, col_resultado = st.columns(2)
+    col_entrada, col_resultado = st.columns([1, 1.2], gap="large")
 
     with col_entrada:
-        st.markdown("### 📋 Dados do aluno")
+        st.markdown("#### 📋 Dados do aluno")
+
         entrada_horas = st.slider("Horas de estudo por semana", 0, 20, 5, step=1)
+        st.markdown(f"<div class='dica-badge'>{dica_horas(entrada_horas)}</div>", unsafe_allow_html=True)
+
         entrada_faltas = st.slider("Número de faltas", 0, 30, 5, step=1)
+        st.markdown(f"<div class='dica-badge'>{dica_faltas(entrada_faltas)}</div>", unsafe_allow_html=True)
+
         entrada_nota = st.slider("Nota obtida", 0.0, 10.0, 7.0, step=0.5)
-        botao_prever = st.button("🔍 Prever situação", type="primary")
+        st.markdown(f"<div class='dica-badge'>{dica_nota(entrada_nota)}</div>", unsafe_allow_html=True)
+
+        botao_prever = st.button("🔍 Prever situação", type="primary", use_container_width=True)
 
     with col_resultado:
-        st.markdown("### 🎯 Resultado")
+        st.markdown("#### 🎯 Resultado")
         if botao_prever:
             classe_prevista, confianca, prob_dict, explicacao_ou_erros = prever_situacao(
                 entrada_horas, entrada_faltas, entrada_nota,
@@ -424,39 +649,44 @@ with aba_previsao:
                 for erro in explicacao_ou_erros:
                     st.warning(f"⚠️ {erro}")
             else:
-                emoji = {"Aprovado": "✅", "Recuperacao": "🟡", "Reprovado": "🔴"}.get(classe_prevista, "")
-                cor = CORES_SITUACAO.get(classe_prevista, "#6366f1")
+                emoji = EMOJI_SITUACAO.get(classe_prevista, "")
+                cor = CORES_SITUACAO.get(classe_prevista, COR_DESTAQUE)
 
                 confianca_html = (
-                    f"<div style='font-size:14px; color:#555; margin-top:6px;'>"
-                    f"Confiança do modelo: {confianca:.1f}%</div>"
+                    f"<div class='resultado-confianca'>Confiança do modelo: {confianca:.1f}%</div>"
                     if confianca is not None else ""
                 )
                 st.markdown(
                     f"""
-                    <div style="background:{cor}22; border:2px solid {cor}; border-radius:16px;
-                                padding:24px; text-align:center;">
-                        <div style="font-size:42px;">{emoji}</div>
-                        <div style="font-size:28px; font-weight:800; color:{cor}; margin-top:4px;">
-                            {classe_prevista}
-                        </div>
+                    <div class="resultado-card" style="--cor-resultado:{cor};">
+                        <div class="resultado-emoji">{emoji}</div>
+                        <div class="resultado-classe" style="color:{cor};">{classe_prevista}</div>
                         {confianca_html}
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
+                if classe_prevista == "Aprovado":
+                    st.balloons()
+
+                if confianca is not None:
+                    st.progress(min(int(confianca), 100))
+
                 with st.expander("📊 Probabilidades por situação", expanded=True):
                     if prob_dict is not None:
-                        for classe, p in prob_dict.items():
-                            st.markdown(f"- **{classe}**: {p * 100:.1f}%")
+                        st.plotly_chart(
+                            gerar_grafico_probabilidades(prob_dict),
+                            use_container_width=True,
+                            config={"displayModeBar": False},
+                        )
                     else:
                         st.markdown("Modelo não fornece probabilidades.")
 
                 with st.expander("💡 Por que o modelo decidiu isso?", expanded=False):
                     st.markdown(explicacao_ou_erros)
         else:
-            st.info("Preencha os dados e clique em **Prever situação**.")
+            st.info("Ajuste os controles ao lado e clique em **Prever situação**.")
 
 # ---------------- Aba 2: Sobre o modelo ----------------
 with aba_modelo:
@@ -464,7 +694,7 @@ with aba_modelo:
         f"| {nome} | {info['acuracia'] * 100:.0f}% |"
         for nome, info in dados["resultados_modelos"].items()
     )
-    st.markdown(f"### Modelo escolhido: **{dados['nome_melhor_modelo']}**")
+    st.markdown(f"#### Modelo escolhido: **{dados['nome_melhor_modelo']}**")
     st.markdown(
         "| Modelo | Acurácia (LOOCV) |\n|---|---|\n" + tabela_modelos
     )
@@ -483,14 +713,14 @@ with aba_modelo:
 
     col_a, col_b = st.columns(2)
     with col_a:
-        st.pyplot(dados["fig_comparacao"])
+        st.plotly_chart(dados["fig_comparacao"], use_container_width=True, config={"displayModeBar": False})
     with col_b:
-        st.pyplot(dados["fig_matriz"])
+        st.plotly_chart(dados["fig_matriz"], use_container_width=True, config={"displayModeBar": False})
     st.pyplot(dados["fig_arvore"])
 
 # ---------------- Aba 3: Dados utilizados ----------------
 with aba_dados:
-    st.markdown("### Alunos usados para treinar o modelo")
+    st.markdown("#### Alunos usados para treinar o modelo")
     st.dataframe(dados["df_alunos"], use_container_width=True)
     st.markdown(
         f"Para adicionar mais alunos, edite ou crie um arquivo "
